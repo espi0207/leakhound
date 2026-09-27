@@ -1,0 +1,129 @@
+name: Instaladores
+
+# Construye el instalador de Windows, la app de macOS y el paquete de Linux, y prueba que
+# cada uno se instala y funciona. Con cada cambio en main solo se comprueban. Para
+# publicarlos en Releases: subir una etiqueta de versión (git tag v1.1.0 && git push --tags)
+# o, desde GitHub, Actions > Instaladores > Run workflow con "Publicar" marcado, que crea
+# la etiqueta con la versión de __init__.py.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publicar:
+        description: Publicar en Releases (crea la etiqueta v + la versión de __init__.py)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # para crear la release
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: PyInstaller
+        run: |
+          pip install . pyinstaller pillow
+          pyinstaller --noconfirm packaging/leakhound.spec
+      - name: Instalador (Inno Setup)
+        shell: pwsh
+        run: |
+          python -c "from PIL import Image; Image.open('packaging/icon.png').save('packaging/icon.ico', sizes=[(s, s) for s in (16, 24, 32, 48, 64, 128, 256)])"
+          $env:LEAKHOUND_VERSION = python -c "import leakhound; print(leakhound.__version__)"
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc packaging\windows\leakhound.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC ha fallado" }
+      - name: Instalarlo y probarlo
+        shell: pwsh
+        run: |
+          # La comprobación usa un repositorio de ejemplo: git viene en las tres máquinas de GitHub.
+          $dir = "$env:RUNNER_TEMP\leakhound-instalado"
+          $setup = Start-Process dist\leakhound-windows.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/DIR=$dir" -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "El instalador ha fallado ($($setup.ExitCode))" }
+          $check = Start-Process "$dir\leakhound.exe" -ArgumentList "--comprobar" -Wait -PassThru
+          if ($check.ExitCode -ne 0) { throw "leakhound --comprobar ha fallado ($($check.ExitCode))" }
+          $menu = (Get-ItemProperty "HKCU:\Software\Classes\Directory\shell\leakhound\command").'(default)'
+          if ($menu -notlike "*leakhound.exe*%1*") { throw "Falta el menú de las carpetas: $menu" }
+          Write-Output "Instalado en $dir y funcionando. Registro: $menu"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: leakhound-windows
+          path: dist/leakhound-windows.exe
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: PyInstaller
+        run: |
+          pip install . pyinstaller pillow
+          pyinstaller --noconfirm packaging/leakhound.spec
+      - name: Probar la app
+        run: |
+          # Firma "ad hoc" (sin certificado): la pone PyInstaller y los Mac con chip de Apple
+          # no abren nada sin ella. Si estuviera rota, macOS diría que la app está dañada.
+          codesign --verify --deep --strict --verbose=2 dist/leakhound.app
+          dist/leakhound.app/Contents/MacOS/leakhound --comprobar
+      - name: Imagen de disco
+        run: |
+          mkdir dmg
+          cp -R dist/leakhound.app dmg/
+          ln -s /Applications dmg/Aplicaciones
+          hdiutil create -volname leakhound -srcfolder dmg -ov -format UDZO dist/leakhound-mac.dmg
+      - uses: actions/upload-artifact@v7
+        with:
+          name: leakhound-mac
+          path: dist/leakhound-mac.dmg
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Paquete .deb
+        run: packaging/linux/build-deb.sh
+      - name: Instalarlo y probarlo
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ./dist/leakhound-linux.deb xvfb
+          leakhound --version
+          xvfb-run -a leakhound-app --comprobar
+      - uses: actions/upload-artifact@v7
+        with:
+          name: leakhound-linux
+          path: dist/leakhound-linux.deb
+
+  publicar:
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publicar
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publicar en Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v$(sed -n 's/^__version__ = "\(.*\)"/\1/p' leakhound/__init__.py)"
+            # Si esa versión ya estaba publicada, se sustituye (con su etiqueta) por la de este commit.
+            gh release delete "$tag" --cleanup-tag --yes 2>/dev/null || true
+          fi
+          gh release create "$tag" dist/* --target "$GITHUB_SHA" --title "leakhound $tag" --notes-file packaging/release-notes.md

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=leakhound
+GenericName=Buscar secretos en el código
+Comment=Busca contraseñas, claves de API y tokens en el código y en el historial de git
+Exec=leakhound-app
+Icon=leakhound
+Terminal=false
+Categories=Development;Utility;
+Keywords=secretos;contraseñas;tokens;git;seguridad;
