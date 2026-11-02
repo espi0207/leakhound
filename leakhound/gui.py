@@ -25,7 +25,7 @@ from . import __version__, demo
 from .git import GitError, repo_root, scan_history
 from .report import to_json, to_sarif, to_text
 from .rules import Severity
-from .scanner import Finding, scan_path
+from .scanner import Finding, project_root, scan_path
 
 ICON = Path(__file__).with_name("icon.png")
 ROW_COLORS = {
@@ -47,7 +47,8 @@ def search(folder: Path, history: bool) -> Result:
     """Lo que hay ahora en la carpeta y, si se pide, lo que ha pasado por git. Un secreto
     que todavía no se ha llegado a hacer commit solo sale en lo primero, así que se juntan."""
     if not history:
-        return Result(scan_path(folder), folder, False)
+        # Las rutas salen relativas a la raíz del proyecto (src/config.py), no a la carpeta elegida.
+        return Result(scan_path(folder), project_root(Path(folder).resolve()), False)
     root = repo_root(folder)
     found = scan_history(root)
     seen = {(f.rule.id, f.secret, f.path) for f in found}
