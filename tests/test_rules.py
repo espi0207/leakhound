@@ -136,3 +136,35 @@ def test_real_looking_credentials_in_base64_are_reported():
 
     value = base64.b64encode(b"admin:" + fake.password().encode()).decode()
     assert rules_in(f'auth_token = "{value}"') == ["generic-secret"]
+
+
+def test_long_lines_are_scanned_in_linear_time():
+    # Un JavaScript minificado tiene líneas de cientos de KB: no puede tardar segundos cada una.
+    import time
+
+    from leakhound.scanner import scan_line
+
+    for line in ("a-" * 20_000, "x." * 20_000, "a:" * 20_000):
+        start = time.perf_counter()
+        scan_line(line, "app.min.js")
+        assert time.perf_counter() - start < 1.0
+
+
+def test_url_password_with_empty_user_and_a_host_with_the_word_password():
+    from leakhound.fakes import Fakes
+    from leakhound.scanner import scan_line
+
+    pw = Fakes(seed=4)._rand(16)
+    for url in ("redis" + f"://:{pw}@localhost/0", "postgres" + f"://app:{pw}@password-db.internal/app"):
+        assert [s for _, _, s in scan_line(f"URL = {url}")] == [pw], url
+
+
+def test_secrets_ending_in_a_symbol_of_their_alphabet():
+    from leakhound.fakes import Fakes
+    from leakhound.scanner import scan_line
+
+    f = Fakes(seed=5)
+    aws = f._rand(39) + "/"
+    assert any(r.id == "aws-secret-access-key" for r, _, _ in scan_line(f"aws_secret_access_key = {aws}"))
+    telegram = "123456789:" + "AA" + f._rand(32) + "-"
+    assert any(r.id == "telegram-bot-token" for r, _, _ in scan_line(f'BOT = "{telegram}"'))

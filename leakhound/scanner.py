@@ -12,13 +12,18 @@ from pathlib import Path
 from .rules import RULES, Rule, Severity
 
 # Carpetas que no merece la pena mirar: dependencias, entornos virtuales, compilados.
-SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".ruff_cache", "dist"}
+SKIP_DIRS = {
+    ".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
+    "dist",
+}  # fmt: skip
 MAX_FILE_SIZE = 2 * 1024 * 1024
 IGNORE_FILE = ".leakhound-ignore"
 INLINE_IGNORE = "leakhound:ignore"
 
 # Reglas genéricas: si en la misma línea ya ha saltado una concreta, sobran.
 GENERIC = {"generic-secret", "generic-secret-config", "url-password"}
+# Las únicas reglas en las que se enseña el dominio (el resto de la URL es el secreto).
+WEBHOOKS = {"slack-webhook", "discord-webhook"}
 
 
 @dataclass(frozen=True)
@@ -40,9 +45,9 @@ class Finding:
     @property
     def masked(self) -> str:
         """El secreto sin enseñarlo: primeros caracteres y longitud. Un informe no debe filtrar lo que busca."""
-        if self.secret.startswith("https://"):
+        if self.rule.id in WEBHOOKS and "/" in self.secret[8:]:
             # En un webhook lo que identifica el servicio es el dominio; el secreto es el resto.
-            host = self.secret[: self.secret.index("/", 8) + 1] if "/" in self.secret[8:] else self.secret
+            host = self.secret[: self.secret.index("/", 8) + 1]
             return f"{host}… ({len(self.secret)} caracteres)"
         visible = 4 if len(self.secret) >= 16 else 2
         return f"{self.secret[:visible]}… ({len(self.secret)} caracteres)"
@@ -125,13 +130,18 @@ class Ignore:
         return finding.fingerprint not in self.fingerprints and not self.skips_path(finding.path)
 
 
-def read_text_file(path: Path) -> str | None:
-    """Contenido del archivo si es de texto y de un tamaño razonable; si no, None."""
+def read_text_file(path: Path, errors: list | None = None) -> str | None:
+    """Contenido del archivo si es de texto y de un tamaño razonable; si no, None.
+
+    Si no se puede leer, se apunta en `errors`: un archivo sin leer no es un archivo limpio.
+    """
     try:
         if path.stat().st_size > MAX_FILE_SIZE:
             return None
         data = path.read_bytes()
-    except OSError:
+    except OSError as exc:
+        if errors is not None:
+            errors.append((path, exc.strerror or str(exc)))
         return None
     if is_binary(data[:8192]):
         return None
@@ -150,17 +160,32 @@ def iter_files(root: Path) -> Iterator[Path]:
                 yield path
 
 
-def scan_path(root: Path, ignore: Ignore | None = None) -> list[Finding]:
-    """Escanea un archivo o un directorio entero."""
-    root = Path(root)
-    base = root if root.is_dir() else root.parent
+def project_root(path: Path) -> Path:
+    """La raíz del repositorio git que contiene `path`, o el propio directorio si no hay ninguno.
+
+    Así, escanear src/ usa el .leakhound-ignore de la raíz y las rutas salen como src/config.py.
+    """
+    start = path if path.is_dir() else path.parent
+    for folder in (start, *start.parents):
+        if (folder / ".git").exists():
+            return folder
+    return start
+
+
+def scan_path(root: Path, ignore: Ignore | None = None, errors: list | None = None) -> list[Finding]:
+    """Escanea un archivo o un directorio entero. Los que no se pueden leer van a `errors`."""
+    root = Path(root).resolve()
+    base = project_root(root)
     ignore = ignore if ignore is not None else Ignore.load(base)
     findings = []
     for path in iter_files(root):
         rel = path.relative_to(base).as_posix()
         if rel == IGNORE_FILE or ignore.skips_path(rel):
             continue
-        text = read_text_file(path)
+        failed: list = []
+        text = read_text_file(path, failed)
+        if errors is not None:
+            errors.extend((rel, reason) for _, reason in failed)
         if text is None:
             continue
         findings.extend(f for f in scan_text(text, rel) if ignore.keeps(f))

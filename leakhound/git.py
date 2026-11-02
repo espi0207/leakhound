@@ -22,6 +22,9 @@ from .scanner import Finding, Ignore, scan_line, scan_path
 COMMIT_MARK = "\x00COMMIT "  # un NUL no puede salir en el diff de un archivo de texto
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 HOOK_MARK = "# instalado por leakhound"
+# Con diff.noprefix=true en la configuración del usuario, git quita el "b/" y la ruta
+# saldría cortada ("ADME.md"). Así siempre lleva los prefijos que se esperan.
+DIFF_PREFIXES = ("--src-prefix=a/", "--dst-prefix=b/")
 
 
 # En Windows, desde la ventana (que no tiene consola), cada llamada a git abriría una
@@ -89,6 +92,8 @@ def added_lines(diff: Iterable[str]) -> Iterator[tuple[dict, str, int, str]]:
         elif not in_header and path and line.startswith("+"):
             yield commit, path, line_no, line[1:]
             line_no += 1
+        elif not in_header and line.startswith(" "):
+            line_no += 1  # línea de contexto (diff.interHunkContext puede meterlas aunque sea --unified=0)
 
 
 def _scan_diff(diff: Iterable[str], ignore: Ignore) -> list[Finding]:
@@ -107,7 +112,7 @@ def scan_history(repo: Path) -> list[Finding]:
     ignore = Ignore.load(root)
     cmd = [
         "git", "-C", str(root), "-c", "core.quotepath=false",
-        "log", "--all", "-p", "--unified=0", "--no-color", "--no-ext-diff",
+        "log", "--all", "-p", "--unified=0", "--no-color", "--no-ext-diff", *DIFF_PREFIXES,
         "--format=%x00COMMIT %H%x09%an%x09%as",  # %x00 lo pone git: no se puede pasar un NUL como argumento
     ]  # fmt: skip
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=NO_WINDOW) as proc:
@@ -130,7 +135,10 @@ def scan_history(repo: Path) -> list[Finding]:
 def scan_staged(repo: Path) -> list[Finding]:
     """Los secretos en lo que está preparado para el próximo commit (`git add`)."""
     root = repo_root(repo)
-    diff = _git(root, "-c", "core.quotepath=false", "diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff")
+    diff = _git(
+        root, "-c", "core.quotepath=false", "diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff",
+        *DIFF_PREFIXES,
+    )  # fmt: skip
     return _scan_diff(diff.splitlines(), Ignore.load(root))
 
 
