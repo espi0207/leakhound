@@ -101,7 +101,18 @@ leakhound rules                     # lista de reglas
 ```
 
 `--format json` o `--format sarif` cambian la salida, y `-o archivo` la guarda. Sale
-con código 1 si encuentra algo, 0 si no y 2 si hay un error.
+con código 1 si encuentra algo, 0 si no y 2 si hay un error (también si algún archivo
+no se ha podido leer: un análisis a medias no da el código por bueno).
+
+### Solo lo nuevo, con `--baseline`
+
+En un proyecto que ya tiene secretos antiguos (que hay que ir rotando), se guarda la
+foto de hoy y a partir de ahí solo se avisa de los que aparezcan nuevos:
+
+```bash
+leakhound history . --format json -o leakhound-base.json   # la foto de hoy
+leakhound history . --baseline leakhound-base.json         # solo lo que no estaba
+```
 
 ### Como hook pre-commit
 

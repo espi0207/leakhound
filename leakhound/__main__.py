@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -24,6 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
     def output_options(cmd):
         cmd.add_argument("--format", choices=["text", "json", "sarif"], default="text", help="formato de salida")
         cmd.add_argument("--output", "-o", type=Path, help="guardar el informe en un archivo")
+        cmd.add_argument(
+            "--baseline",
+            type=Path,
+            metavar="JSON",
+            help="informe JSON anterior (--format json): solo se avisa de los secretos que no estaban",
+        )
 
     scan = sub.add_parser("scan", help="escanea archivos o directorios")
     scan.add_argument("paths", nargs="*", type=Path, default=[Path(".")])
@@ -44,6 +51,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("rules", help="lista las reglas")
     sub.add_parser("demo", help="demostración con un repositorio temporal")
     return p
+
+
+def load_baseline(path: Path) -> set[str]:
+    """Las huellas de un informe JSON de leakhound guardado antes."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {item["fingerprint"] for item in data}
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise BaselineError(f"no se puede usar {path} como baseline: tiene que ser un informe --format json") from exc
+
+
+class BaselineError(Exception):
+    pass
+
+
+def _new_only(findings, baseline: Path | None):
+    if baseline is None:
+        return findings
+    known = load_baseline(baseline)
+    return [f for f in findings if f.fingerprint not in known]
 
 
 def _report(findings, fmt: str, output: Path | None, where: str) -> int:
@@ -80,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"error: no existe {', '.join(missing)}", file=sys.stderr)
                 return EXIT_ERROR
             errors: list = []
-            findings = [f for path in args.paths for f in scan_path(path, errors=errors)]
+            findings = _new_only([f for path in args.paths for f in scan_path(path, errors=errors)], args.baseline)
             where = ", ".join("el directorio actual" if str(p) == "." else str(p) for p in args.paths)
             code = _report(findings, args.format, args.output, where)
             for rel, reason in errors:
@@ -89,7 +116,8 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_ERROR if errors and code == EXIT_OK else code
 
         if args.command == "history":
-            return _report(scan_history(args.repo), args.format, args.output, "el historial")
+            findings = _new_only(scan_history(args.repo), args.baseline)
+            return _report(findings, args.format, args.output, "el historial")
 
         if args.command == "staged":
             findings = scan_staged(args.repo)
@@ -112,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
                 hook = uninstall_hook(args.repo)
                 print(f"hook quitado de {hook}" if hook else "no había ningún hook de leakhound")
             return EXIT_OK
-    except GitError as exc:
+    except (GitError, BaselineError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     except OSError as exc:

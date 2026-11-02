@@ -87,3 +87,32 @@ def test_scan_with_unreadable_files_is_not_reported_as_clean(tmp_path, capsys, m
     monkeypatch.setattr(P, "read_bytes", broken)
     assert main(["scan", str(tmp_path)]) == EXIT_ERROR
     assert "no se ha podido leer" in capsys.readouterr().err
+
+
+def test_baseline_only_reports_new_secrets(tmp_path, capsys):
+    import json
+
+    from leakhound.__main__ import EXIT_FOUND, EXIT_OK, main
+    from leakhound.fakes import Fakes
+
+    f = Fakes(seed=11)
+    project = tmp_path / "p"
+    project.mkdir()
+    (project / "viejo.py").write_text(f'T = "{f.github_token()}"\n')
+    base = tmp_path / "base.json"
+    assert main(["scan", str(project), "--format", "json", "-o", str(base)]) == EXIT_FOUND
+    assert main(["scan", str(project), "--baseline", str(base)]) == EXIT_OK  # lo de antes ya está apuntado
+
+    (project / "nuevo.py").write_text(f'K = "{f.stripe_key()}"\n')
+    capsys.readouterr()
+    assert main(["scan", str(project), "--baseline", str(base), "--format", "json"]) == EXIT_FOUND
+    assert [x["path"] for x in json.loads(capsys.readouterr().out)] == ["nuevo.py"]
+
+
+def test_bad_baseline_is_an_error(tmp_path, capsys):
+    from leakhound.__main__ import EXIT_ERROR, main
+
+    bad = tmp_path / "base.json"
+    bad.write_text("esto no es json")
+    assert main(["scan", str(tmp_path), "--baseline", str(bad)]) == EXIT_ERROR
+    assert "baseline" in capsys.readouterr().err
