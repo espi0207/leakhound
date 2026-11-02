@@ -86,3 +86,46 @@ def test_leakhound_does_not_find_secrets_in_itself():
     # Las pruebas y la demo montan los secretos al ejecutarse; en el código no hay ninguno.
     root = Path(leakhound.__file__).resolve().parent.parent
     assert scan_path(root) == []
+
+
+def test_masked_value_never_shows_a_whole_url_shaped_secret():
+    # Un password = "https://<lo que sea>" sin barra detrás no puede salir entero en el informe.
+    from leakhound.scanner import scan_text
+
+    secret = "https" + "://" + fake.password()
+    [finding] = list(scan_text(f'password = "{secret}"\n', "a.py"))
+    assert secret not in finding.masked and secret[12:] not in finding.masked
+
+
+def test_webhook_mask_keeps_only_the_service_host():
+    from leakhound.scanner import scan_text
+
+    hook = fake.slack_webhook()
+    [finding] = list(scan_text(f"URL = {hook}\n", "a.py"))
+    assert finding.masked.startswith("https://hooks.slack.com/…")
+    assert "/services/" not in finding.masked
+
+
+def test_scan_from_a_subdirectory_uses_the_repo_ignore_and_full_paths(project):
+    (project / ".git").mkdir()  # basta con que parezca un repositorio
+    (project / ".leakhound-ignore").write_text("src/config.py\n")
+    assert scan_path(project / "src") == []
+    (project / ".leakhound-ignore").unlink()
+    [finding] = scan_path(project / "src")
+    assert finding.path == "src/config.py"
+
+
+def test_unreadable_files_are_reported(project, monkeypatch):
+    from pathlib import Path as P
+
+    real = P.read_bytes
+
+    def broken(self):
+        if self.name == "config.py":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(P, "read_bytes", broken)
+    errors: list = []
+    assert scan_path(project, errors=errors) == []
+    assert [e[0] for e in errors] == ["src/config.py"]

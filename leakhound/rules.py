@@ -98,9 +98,10 @@ class Rule:
     pattern: re.Pattern
     min_entropy: float = 0.0  # solo para las reglas genéricas
     # Dónde buscar pistas de que es un ejemplo: "" (no se mira), "secret" (solo en el
-    # valor), "match" (en todo lo encontrado, p. ej. toda la URL) o "line" (en la línea).
+    # valor), "userinfo" (en el usuario y la contraseña de una URL) o "line" (en la línea).
     fake_check: str = ""
     files: tuple[str, ...] = ()  # si no está vacío, la regla solo se aplica a estos archivos
+    needle: str = ""  # texto que tiene que estar en la línea para que merezca la pena buscar
 
     def applies_to(self, path: str) -> bool:
         name = path.rsplit("/", 1)[-1]
@@ -108,12 +109,14 @@ class Rule:
 
     def find(self, line: str):
         """Devuelve (columna, secreto) por cada coincidencia válida en la línea."""
+        if self.needle and self.needle not in line:
+            return
         for m in self.pattern.finditer(line):
             # Si la regla tiene un grupo, el secreto es el grupo; si no, toda la coincidencia.
             secret = m.group(m.lastindex or 0)
             if self.fake_check == "secret" and is_fake(secret):
                 continue
-            if self.fake_check == "match" and (is_fake(secret) or looks_like_placeholder(m.group(0))):
+            if self.fake_check == "userinfo" and (is_fake(secret) or looks_like_placeholder(f"{m.group(1)}:{secret}")):
                 continue
             if self.fake_check == "line" and looks_like_placeholder(line):
                 continue
@@ -129,7 +132,7 @@ def _rule(id, title, severity, regex, flags=0, **kw) -> Rule:
 # Nombres de variable que suelen guardar un secreto, con lo que lleven delante:
 # DB_PASSWORD, dbPassword, SECRET_KEY, stripe_api_key...
 SECRET_NAME = (
-    r"\b[\w.-]*?(?:password|passwd|pwd|secret|secret_?key|api_?key|apikey|"
+    r"\b[\w.-]{0,64}?(?:password|passwd|pwd|secret|secret_?key|api_?key|apikey|"
     r"auth_?token|access_?token|refresh_?token|client_?secret|token)\b"
 )
 # Archivos de configuración, donde los valores van muchas veces sin comillas.
@@ -155,7 +158,7 @@ RULES = [
         "aws-secret-access-key",
         "Clave secreta de AWS",
         Severity.CRITICAL,
-        r"aws_?secret_?(?:access_?)?key\s*[:=]\s*[\"']?([A-Za-z0-9/+]{40})\b",
+        r"aws_?secret_?(?:access_?)?key\s*[:=]\s*[\"']?([A-Za-z0-9/+]{40})(?![A-Za-z0-9/+])",
         re.IGNORECASE,
         fake_check="secret",
     ),
@@ -184,7 +187,7 @@ RULES = [
         "telegram-bot-token",
         "Token de bot de Telegram",
         Severity.HIGH,
-        r"\b([0-9]{8,10}:AA[A-Za-z0-9_-]{33})\b",
+        r"\b([0-9]{8,10}:AA[A-Za-z0-9_-]{33})(?![A-Za-z0-9_-])",
     ),
     _rule("stripe-secret-key", "Clave secreta de Stripe", Severity.CRITICAL, r"\b((?:sk|rk)_live_[A-Za-z0-9]{24,})\b"),
     _rule("google-api-key", "Clave de API de Google", Severity.HIGH, r"\b(AIza[0-9A-Za-z_-]{35})(?![0-9A-Za-z_-])"),
@@ -218,9 +221,11 @@ RULES = [
         "url-password",
         "Contraseña dentro de una URL",
         Severity.HIGH,
-        r"\b[a-z][a-z0-9+.-]*://[^/\s:@\"']+:([^/\s:@\"']{4,})@[^\s/\"']+",
+        # usuario vacío vale (redis://:clave@host); el esquema, como mucho 32 caracteres
+        r"\b[a-z][a-z0-9+.-]{0,31}://([^/\s:@\"']*):([^/\s:@\"']{4,})@[^\s/\"']+",
         re.IGNORECASE,
-        fake_check="match",  # "your-name:abc123@..." en un README
+        fake_check="userinfo",  # "your-name:abc123@..." en un README (el host no cuenta: password-db.internal)
+        needle="://",
         min_entropy=2.5,
     ),
     _rule(

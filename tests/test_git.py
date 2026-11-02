@@ -133,3 +133,15 @@ def test_hook_does_not_replace_someone_elses(repo):
     install_hook(repo, force=True)
     assert uninstall_hook(repo) is not None
     assert not (hooks / "pre-commit").exists()
+
+
+def test_added_lines_counts_context_lines():
+    diff = ["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,0 +1,3 @@", "+uno", " dos", "+tres"]
+    assert [(n, t) for _, _, n, t in added_lines(diff)] == [(1, "uno"), (3, "tres")]
+
+
+def test_history_paths_survive_diff_noprefix(repo):
+    git(repo, "config", "diff.noprefix", "true")
+    commit(repo, {"README.md": f"export T={fake.github_token()}\n"})
+    [finding] = scan_history(repo)
+    assert finding.path == "README.md"

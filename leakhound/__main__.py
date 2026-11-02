@@ -79,9 +79,14 @@ def main(argv: list[str] | None = None) -> int:
             if missing:
                 print(f"error: no existe {', '.join(missing)}", file=sys.stderr)
                 return EXIT_ERROR
-            findings = [f for path in args.paths for f in scan_path(path)]
+            errors: list = []
+            findings = [f for path in args.paths for f in scan_path(path, errors=errors)]
             where = ", ".join("el directorio actual" if str(p) == "." else str(p) for p in args.paths)
-            return _report(findings, args.format, args.output, where)
+            code = _report(findings, args.format, args.output, where)
+            for rel, reason in errors:
+                print(f"aviso: no se ha podido leer {rel} ({reason})", file=sys.stderr)
+            # Un análisis incompleto no puede dar por bueno el código (p. ej. en la CI).
+            return EXIT_ERROR if errors and code == EXIT_OK else code
 
         if args.command == "history":
             return _report(scan_history(args.repo), args.format, args.output, "el historial")

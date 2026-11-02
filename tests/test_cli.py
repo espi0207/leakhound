@@ -69,3 +69,21 @@ def test_demo(capsys):
     assert main(["demo"]) == EXIT_OK
     out = capsys.readouterr().out
     assert "ya no está en el código, pero sí en el historial" in out
+
+
+def test_scan_with_unreadable_files_is_not_reported_as_clean(tmp_path, capsys, monkeypatch):
+    from pathlib import Path as P
+
+    from leakhound.__main__ import EXIT_ERROR, main
+
+    (tmp_path / "a.txt").write_text("nada\n")
+    real = P.read_bytes
+
+    def broken(self):
+        if self.name == "a.txt":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(P, "read_bytes", broken)
+    assert main(["scan", str(tmp_path)]) == EXIT_ERROR
+    assert "no se ha podido leer" in capsys.readouterr().err
