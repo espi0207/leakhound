@@ -13,11 +13,12 @@ import re
 import stat
 import subprocess
 import sys
+from collections import deque
 from collections.abc import Iterable, Iterator
 from dataclasses import replace
 from pathlib import Path
 
-from .scanner import Finding, Ignore, scan_line, scan_path
+from .scanner import KEY_LOOKAHEAD, Finding, Ignore, scan_line, scan_path, with_key_body
 
 COMMIT_MARK = "\x00COMMIT "  # un NUL no puede salir en el diff de un archivo de texto
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -96,23 +97,37 @@ def added_lines(diff: Iterable[str]) -> Iterator[tuple[dict, str, int, str]]:
             line_no += 1  # línea de contexto (diff.interHunkContext puede meterlas aunque sea --unified=0)
 
 
+def _with_lookahead(items: Iterator[tuple], n: int) -> Iterator[tuple[tuple, list[tuple]]]:
+    """Cada elemento junto con los `n` siguientes (sin cargar el diff entero en memoria)."""
+    window: deque = deque()
+    for item in items:
+        window.append(item)
+        if len(window) > n:
+            yield window[0], list(window)[1:]
+            window.popleft()
+    while window:
+        yield window[0], list(window)[1:]
+        window.popleft()
+
+
 def _scan_diff(diff: Iterable[str], ignore: Ignore) -> list[Finding]:
     findings = []
-    for commit, path, line_no, text in added_lines(diff):
+    for (commit, path, line_no, text), following in _with_lookahead(added_lines(diff), KEY_LOOKAHEAD):
         for rule, col, secret in scan_line(text, path):
+            # el cuerpo de una clave son las líneas que siguen en el mismo archivo y el mismo commit
+            body = [t for c, p, _, t in following if c is commit and p == path]
+            secret = with_key_body(rule, secret, body)
             finding = Finding(rule, path, line_no, col, secret, **commit)
             if ignore.keeps(finding):
                 findings.append(finding)
     return findings
 
 
-def scan_history(repo: Path) -> list[Finding]:
-    """Todos los secretos que se han añadido alguna vez en cualquier rama."""
-    root = repo_root(repo)
-    ignore = Ignore.load(root)
+def _log_and_scan(root: Path, ignore: Ignore, merges: str) -> list[Finding] | None:
+    """`git log -p` de todas las ramas, escaneado sobre la marcha. None si aún no hay commits."""
     cmd = [
         "git", "-C", str(root), "-c", "core.quotepath=false",
-        "log", "--all", "-p", "--unified=0", "--no-color", "--no-ext-diff", *DIFF_PREFIXES,
+        "log", "--all", "-p", merges, "--unified=0", "--no-color", "--no-ext-diff", *DIFF_PREFIXES,
         "--format=%x00COMMIT %H%x09%an%x09%as",  # %x00 lo pone git: no se puede pasar un NUL como argumento
     ]  # fmt: skip
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=NO_WINDOW) as proc:
@@ -121,8 +136,26 @@ def scan_history(repo: Path) -> list[Finding]:
         stderr = proc.stderr.read().decode(errors="replace")
     if proc.returncode != 0:
         if "does not have any commits" in stderr:
-            return []
+            return None
         raise GitError(stderr.strip() or "git log ha fallado")
+    return findings
+
+
+def scan_history(repo: Path) -> list[Finding]:
+    """Todos los secretos que se han añadido alguna vez en cualquier rama."""
+    root = repo_root(repo)
+    ignore = Ignore.load(root)
+    # Sin esto, git log no enseña el diff de los merges, y lo que se escribe al resolver un
+    # conflicto no aparece en ningún commit. Contra el primer padre sale justo lo que el
+    # merge cambió en la rama principal. --diff-merges es de git 2.31; con uno más viejo, -m.
+    try:
+        findings = _log_and_scan(root, ignore, "--diff-merges=first-parent")
+    except GitError as exc:
+        if "diff-merges" not in str(exc):
+            raise
+        findings = _log_and_scan(root, ignore, "-m")
+    if findings is None:
+        return []
 
     # git log va del commit más nuevo al más viejo; me quedo con el primero que lo añadió.
     oldest: dict[tuple, Finding] = {}

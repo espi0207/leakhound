@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import os
+import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +22,7 @@ IGNORE_FILE = ".leakhound-ignore"
 INLINE_IGNORE = "leakhound:ignore"
 
 # Reglas genéricas: si en la misma línea ya ha saltado una concreta, sobran.
-GENERIC = {"generic-secret", "generic-secret-config", "url-password"}
+GENERIC = {"generic-secret", "generic-secret-config", "url-password", "url-query-password", "xml-secret"}
 # Las únicas reglas en las que se enseña el dominio (el resto de la URL es el secreto).
 WEBHOOKS = {"slack-webhook", "discord-webhook"}
 
@@ -45,6 +46,8 @@ class Finding:
     @property
     def masked(self) -> str:
         """El secreto sin enseñarlo: primeros caracteres y longitud. Un informe no debe filtrar lo que busca."""
+        if self.rule.id == "private-key":
+            return self.secret.split("\n", 1)[0]  # la cabecera dice qué tipo de clave es; el cuerpo no se enseña
         if self.rule.id in WEBHOOKS and "/" in self.secret[8:]:
             # En un webhook lo que identifica el servicio es el dominio; el secreto es el resto.
             host = self.secret[: self.secret.index("/", 8) + 1]
@@ -85,10 +88,31 @@ def scan_line(line: str, path: str = "", rules: Iterable[Rule] = RULES) -> list[
     ]
 
 
+# Una línea del cuerpo de una clave (base64 en PEM, OpenSSH y PuTTY).
+KEY_BODY = re.compile(r"^[A-Za-z0-9+/=]{40,}$")
+KEY_LOOKAHEAD = 8  # PuTTY pone antes "Encryption:", "Comment:" y "Public-Lines:"
+
+
+def with_key_body(rule: Rule, secret: str, following: Iterable[str]) -> str:
+    """En una clave privada lo que salta es la cabecera, igual en todas las del mismo tipo.
+
+    Se le pega la primera línea del cuerpo para que cada clave tenga su propia huella: si no,
+    ignorar una clave en .leakhound-ignore ignoraba todas las demás.
+    """
+    if rule.id != "private-key":
+        return secret
+    for line in following:
+        if KEY_BODY.match(line.strip()):
+            return f"{secret}\n{line.strip()}"
+    return secret
+
+
 def scan_text(text: str, path: str, first_line: int = 1) -> Iterator[Finding]:
-    for number, line in enumerate(text.splitlines(), start=first_line):
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
         for rule, col, secret in scan_line(line, path):
-            yield Finding(rule, path, number, col, secret)
+            secret = with_key_body(rule, secret, lines[index + 1 : index + 1 + KEY_LOOKAHEAD])
+            yield Finding(rule, path, first_line + index, col, secret)
 
 
 def is_binary(chunk: bytes) -> bool:

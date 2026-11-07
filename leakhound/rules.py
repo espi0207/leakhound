@@ -32,7 +32,7 @@ class Severity(IntEnum):
 # Valores de ejemplo que aparecen en documentación y plantillas.
 PLACEHOLDERS = (
     "example", "xxxx", "changeme", "change_me", "your_", "your-", "<", "${", "{{",
-    "dummy", "placeholder", "password", "passwd", "contraseña",
+    "dummy", "placeholder", "password", "passwd", "contraseña", "...", "…",
 )  # fmt: skip
 
 
@@ -136,7 +136,10 @@ SECRET_NAME = (
     r"auth_?token|access_?token|refresh_?token|client_?secret|token)\b"
 )
 # Archivos de configuración, donde los valores van muchas veces sin comillas.
-CONFIG_FILES = (".env", ".env.*", "*.env", "*.ini", "*.cfg", "*.conf", "*.properties", "*.yml", "*.yaml")
+CONFIG_FILES = (
+    ".env", ".env.*", "*.env", "*.ini", "*.cfg", "*.conf", "*.properties", "*.yml", "*.yaml",
+    ".npmrc", ".pypirc", "*.tfvars",
+)  # fmt: skip
 
 
 RULES = [
@@ -144,7 +147,7 @@ RULES = [
         "private-key",
         "Clave privada",
         Severity.CRITICAL,
-        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----",
+        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----|^PuTTY-User-Key-File-[23]:",
         fake_check="line",  # "-----BEGIN PRIVATE KEY-----\\nXXXX..." en la documentación
     ),
     _rule(
@@ -169,8 +172,13 @@ RULES = [
         Severity.CRITICAL,
         r"\b(github_pat_[A-Za-z0-9_]{82})\b",
     ),
-    _rule("gitlab-token", "Token de GitLab", Severity.CRITICAL, r"\b(glpat-[A-Za-z0-9_-]{20,})\b"),
-    _rule("slack-token", "Token de Slack", Severity.HIGH, r"\b(xox[abprs]-[A-Za-z0-9-]{10,})\b"),
+    # glpat- personal, glrt- de runner, gldt- de despliegue, glptt- de pipeline, glcbt- de CI...
+    _rule(
+        "gitlab-token", "Token de GitLab", Severity.CRITICAL, r"\b(gl(?:pat|rt|dt|ptt|cbt|ft|oas)-[A-Za-z0-9_-]{20,})\b"
+    ),
+    _rule(
+        "slack-token", "Token de Slack", Severity.HIGH, r"\b(xox[abprse]-[A-Za-z0-9-]{10,}|xapp-\d-[A-Za-z0-9-]{20,})\b"
+    ),
     _rule(
         "slack-webhook",
         "Webhook de Slack",
@@ -210,6 +218,94 @@ RULES = [
         "Clave de API de Anthropic",
         Severity.HIGH,
         r"\b(sk-ant-(?:api|admin)\d\d-[A-Za-z0-9_-]{80,})",
+    ),
+    _rule("huggingface-token", "Token de Hugging Face", Severity.HIGH, r"\b(hf_[A-Za-z0-9]{34,40})\b"),
+    _rule("digitalocean-token", "Token de DigitalOcean", Severity.CRITICAL, r"\b(do[opr]_v1_[a-f0-9]{64})\b"),
+    _rule("docker-hub-token", "Token de Docker Hub", Severity.HIGH, r"\b(dckr_pat_[A-Za-z0-9_-]{27,})"),
+    _rule("shopify-token", "Token de Shopify", Severity.HIGH, r"\b(shp(?:at|ca|pa|ss)_[a-fA-F0-9]{32})\b"),
+    _rule("stripe-webhook-secret", "Secreto de webhook de Stripe", Severity.HIGH, r"\b(whsec_[A-Za-z0-9+/]{32,})"),
+    _rule("mailgun-api-key", "Clave de API de Mailgun", Severity.HIGH, r"\b(key-[0-9a-f]{32})\b"),
+    _rule("twilio-api-key", "Clave de API de Twilio", Severity.HIGH, r"\b(SK[0-9a-f]{32})\b"),
+    _rule(
+        "google-oauth-secret",
+        "Secreto de cliente OAuth de Google",
+        Severity.HIGH,
+        r"\b(GOCSPX-[A-Za-z0-9_-]{28})(?![A-Za-z0-9_-])",
+    ),
+    _rule(
+        "azure-storage-key",
+        "Clave de cuenta de almacenamiento de Azure",
+        Severity.CRITICAL,
+        r"AccountKey=([A-Za-z0-9+/]{86}==)",
+        needle="AccountKey=",
+    ),
+    _rule(
+        "azure-client-secret",
+        "Secreto de aplicación de Azure (Entra ID)",
+        Severity.HIGH,
+        r"(?<![A-Za-z0-9_~.-])([A-Za-z0-9_~.-]{3}\dQ~[A-Za-z0-9_~.-]{31,34})(?![A-Za-z0-9_~.-])",
+        needle="Q~",
+    ),
+    _rule("databricks-token", "Token de Databricks", Severity.HIGH, r"\b(dapi[a-f0-9]{32}(?:-\d)?)\b"),
+    _rule("new-relic-key", "Clave de API de New Relic", Severity.HIGH, r"\b(NRAK-[A-Z0-9]{27})\b"),
+    _rule(
+        "grafana-token",
+        "Token de Grafana",
+        Severity.HIGH,
+        r"\b(glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}|glc_[A-Za-z0-9+/]{32,}={0,2})(?![A-Za-z0-9+/=])",
+    ),
+    _rule("postman-api-key", "Clave de API de Postman", Severity.HIGH, r"\b(PMAK-[a-f0-9]{24}-[a-f0-9]{34})\b"),
+    _rule(
+        "age-secret-key",
+        "Clave privada de age",
+        Severity.CRITICAL,
+        r"\b(AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58})\b",
+    ),
+    _rule(
+        "password-hash",
+        "Hash de contraseña (se puede intentar romper sin conexión)",
+        Severity.LOW,  # no sirve para entrar tal cual, pero una contraseña débil sale en minutos
+        # bcrypt ($2b$12$...), sha512crypt y sha256crypt ($6$, $5$, los de /etc/shadow) y yescrypt ($y$)
+        r"(\$2[aby]?\$\d{2}\$[./A-Za-z0-9]{53}"
+        r"|\$[56]\$(?:rounds=\d+\$)?[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{43,86}"
+        r"|\$y\$[./A-Za-z0-9]+\$[./A-Za-z0-9]{1,64}\$[./A-Za-z0-9]{43})(?![./A-Za-z0-9])",
+        needle="$",
+    ),
+    _rule(
+        "connection-string-password",
+        "Contraseña en una cadena de conexión",
+        Severity.HIGH,
+        # las de .NET y ODBC: Server=...;User Id=...;Password=...;
+        r"\b(?:Server|Data Source|Host|Address)\s*=[^;\"'\n]+;[^\"'\n]*?\b(?:Password|Pwd)\s*=\s*([^;\"'`\s]{4,})",
+        re.IGNORECASE,
+        fake_check="secret",
+    ),
+    _rule(
+        "url-query-password",
+        "Contraseña en los parámetros de una URL",
+        Severity.MEDIUM,
+        r"[?&;](?:password|passwd|pwd)=([^&;\s\"'`#]{4,})",
+        re.IGNORECASE,
+        fake_check="secret",
+        min_entropy=2.5,
+    ),
+    _rule(
+        "xml-secret",
+        "Posible contraseña o clave en un XML",
+        Severity.MEDIUM,
+        r"<(\w*(?:password|passwd|secret|api_?key|token)\w*)>([^<\s]{8,})</\1>",
+        re.IGNORECASE,
+        fake_check="secret",
+        min_entropy=3.5,
+        needle="</",
+    ),
+    _rule(
+        "netrc-password",
+        "Contraseña en .netrc",
+        Severity.HIGH,
+        r"\bpassword\s+(\S{4,})",
+        fake_check="secret",
+        files=(".netrc", "_netrc"),
     ),
     _rule(
         "jwt",

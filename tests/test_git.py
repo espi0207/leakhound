@@ -145,3 +145,35 @@ def test_history_paths_survive_diff_noprefix(repo):
     commit(repo, {"README.md": f"export T={fake.github_token()}\n"})
     [finding] = scan_history(repo)
     assert finding.path == "README.md"
+
+
+def test_secret_added_while_resolving_a_merge_conflict(repo):
+    # git log -p no enseña el diff de los commits de merge: lo que se escribe al resolver
+    # un conflicto no salía en ningún sitio.
+    commit(repo, {"config.py": "TOKEN = None\n"}, "base")
+    main = git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    git(repo, "checkout", "-q", "-b", "rama")
+    commit(repo, {"config.py": "TOKEN = 'de la rama'\n"}, "rama")
+    git(repo, "checkout", "-q", main)
+    commit(repo, {"config.py": "TOKEN = 'de main'\n"}, "main")
+    git(repo, "merge", "-q", "rama", check=False)  # conflicto
+    token = fake.github_token()
+    (repo / "config.py").write_text(f"TOKEN = '{token}'\n")
+    git(repo, "add", "config.py")
+    git(repo, "commit", "-q", "--no-edit")
+    merge = git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    [finding] = scan_history(repo)
+    assert finding.rule.id == "github-token" and finding.commit == merge
+
+
+def test_merges_do_not_duplicate_what_the_branch_added(repo):
+    commit(repo, {"a.txt": "nada\n"}, "base")
+    main = git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    git(repo, "checkout", "-q", "-b", "rama")
+    added = commit(repo, {"b.sh": f"export T={fake.github_token()}\n"}, "rama")
+    git(repo, "checkout", "-q", main)
+    commit(repo, {"c.txt": "otra\n"}, "main")
+    git(repo, "merge", "-q", "--no-edit", "rama")
+    [finding] = scan_history(repo)
+    assert finding.commit == added  # el commit que lo metió, no el merge
