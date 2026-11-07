@@ -169,13 +169,20 @@ tests/fixtures/*
 
 ## Qué busca
 
-Formatos concretos, que casi nunca fallan: claves privadas (RSA, EC, OpenSSH, PGP),
-claves de AWS, tokens de GitHub, GitLab, Slack, npm y PyPI, webhooks de Slack y
-Discord, tokens de bots de Telegram, claves de Stripe, Google, SendGrid, OpenAI y
-Anthropic, y JWT.
+Formatos concretos, que casi nunca fallan: claves privadas (RSA, EC, OpenSSH, PGP,
+PuTTY y age), claves de AWS y de almacenamiento de Azure, secretos de aplicaciones de
+Azure, tokens de GitHub, GitLab (también los de runner y despliegue), Slack, npm, PyPI,
+Hugging Face, DigitalOcean, Docker Hub, Shopify, Databricks, Grafana, New Relic y
+Postman, webhooks de Slack y Discord, tokens de bots de Telegram, claves de Stripe (y sus
+secretos de webhook), Google (también el secreto de OAuth), SendGrid, Mailgun, Twilio,
+OpenAI y Anthropic, y JWT. Además, hashes de contraseñas (bcrypt y los de `/etc/shadow`),
+que no sirven para entrar tal cual pero se pueden intentar romper sin conexión, y
+contraseñas en un `.netrc`.
 
-Y dos reglas genéricas: contraseñas dentro de URLs (`postgres://app:xxx@db/...`) y
-asignaciones del tipo `DB_PASSWORD = "..."`. Estas son las difíciles, porque una
+Y unas reglas genéricas: contraseñas dentro de URLs (`postgres://app:xxx@db/...` o
+`?password=...`), en cadenas de conexión de .NET y ODBC (`Server=...;Password=...`),
+en etiquetas XML (`<dbPassword>...</dbPassword>`) y asignaciones del tipo
+`DB_PASSWORD = "..."`. Estas son las difíciles, porque una
 regla así salta con cualquier cosa. Para que no lo haga:
 
 - El valor tiene que parecer aleatorio (entropía de Shannon alta). `"contraseña123"` no
@@ -187,12 +194,20 @@ regla así salta con cualquier cosa. Para que no lo haga:
   `foobar:foobar` y no merece un aviso. `YWRtaW46...` con una contraseña de verdad
   dentro, sí.
 - Los valores sin comillas solo cuentan en archivos de configuración (`.env`, `.yml`,
-  `.ini`...). En código, `token = request.headers` es una variable, no un secreto.
+  `.ini`, `.npmrc`, `.pypirc`, `.tfvars`...). En código, `token = request.headers` es una variable, no un secreto.
 
 Cada uno de esos filtros salió de probarlo contra código real. Sobre unos 10.000
 archivos de dependencias de npm y de la biblioteca estándar de Python, la primera
 versión daba 22 avisos. La actual da uno, y tiene toda la pinta de ser de verdad: un
-token de Coveralls que se quedó dentro de un paquete de npm muy usado.
+token de Coveralls que se quedó dentro de un paquete de npm muy usado. Las reglas de
+noviembre de 2026 las pasé por los 6.363 archivos de `/usr/lib/python3/dist-packages` y
+la documentación de `/usr/share/doc`: solo saltan los hashes de ejemplo de la
+documentación de passlib (son hashes de verdad, por eso tienen prioridad baja) y una
+contraseña de mentira en un formulario de ejemplo.
+
+En el historial también se leen los merges: lo que se escribe al resolver un conflicto
+no está en ningún otro commit. Y cada clave privada tiene su propia huella (la cabecera
+más la primera línea del cuerpo), así que ignorar una no ignora todas las del mismo tipo.
 
 ## Si encuentras un secreto
 
