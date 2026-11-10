@@ -107,11 +107,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"error: no existe {', '.join(missing)}", file=sys.stderr)
                 return EXIT_ERROR
             errors: list = []
-            findings = _new_only([f for path in args.paths for f in scan_path(path, errors=errors)], args.baseline)
+            skipped: list = []
+            found = [f for path in args.paths for f in scan_path(path, errors=errors, skipped=skipped)]
+            findings = _new_only(found, args.baseline)
             where = ", ".join("el directorio actual" if str(p) == "." else str(p) for p in args.paths)
             code = _report(findings, args.format, args.output, where)
             for rel, reason in errors:
                 print(f"aviso: no se ha podido leer {rel} ({reason})", file=sys.stderr)
+            for rel, reason in skipped:
+                print(f"aviso: {rel} no se ha mirado ({reason})", file=sys.stderr)
             # Un análisis incompleto no puede dar por bueno el código (p. ej. en la CI).
             return EXIT_ERROR if errors and code == EXIT_OK else code
 

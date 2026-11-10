@@ -181,13 +181,27 @@ def hooks_dir(repo: Path) -> Path:
     return hooks if hooks.is_absolute() else root / hooks
 
 
+# Si el Python con el que se instaló ya no tiene leakhound (se borró el entorno virtual, se
+# desinstaló...), git decía solo "No module named leakhound" y no dejaba hacer ningún commit.
+HOOK_SCRIPT = """#!/bin/sh
+{mark}
+if ! "{python}" -c "import leakhound" 2>/dev/null; then
+    echo "leakhound: este hook usa {python}, que ya no tiene leakhound." >&2
+    echo "Vuelve a ponerlo con 'leakhound hook install' o quita el archivo $0." >&2
+    echo "Para hacer este commit sin revisar: git commit --no-verify" >&2
+    exit 1
+fi
+exec "{python}" -m leakhound staged
+"""
+
+
 def install_hook(repo: Path, force: bool = False) -> Path:
     hook = hooks_dir(repo) / "pre-commit"
     if hook.exists() and HOOK_MARK not in hook.read_text(errors="replace") and not force:
         raise GitError(f"ya hay un hook pre-commit en {hook} que no es mío; usa --force para reemplazarlo")
     hook.parent.mkdir(parents=True, exist_ok=True)
     # Con la ruta completa de este Python, el hook funciona aunque el entorno virtual no esté activado.
-    hook.write_text(f'#!/bin/sh\n{HOOK_MARK}\nexec "{sys.executable}" -m leakhound staged\n', encoding="utf-8")
+    hook.write_text(HOOK_SCRIPT.format(mark=HOOK_MARK, python=sys.executable), encoding="utf-8")
     hook.chmod(hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return hook
 
