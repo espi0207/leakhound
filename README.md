@@ -167,6 +167,10 @@ jobs:
 tests/fixtures/*
 ```
 
+  Las rutas funcionan como en `.gitignore`: vale un comodín (`tests/fixtures/*`), una
+  carpeta (`tests/fixtures` o `tests/`) y un nombre suelto, que cuenta esté donde esté
+  (`config.example.py`).
+
 ## Qué busca
 
 Formatos concretos, que casi nunca fallan: claves privadas (RSA, EC, OpenSSH, PGP,
@@ -175,9 +179,17 @@ Azure, tokens de GitHub, GitLab (también los de runner y despliegue), Slack, np
 Hugging Face, DigitalOcean, Docker Hub, Shopify, Databricks, Grafana, New Relic y
 Postman, webhooks de Slack y Discord, tokens de bots de Telegram, claves de Stripe (y sus
 secretos de webhook), Google (también el secreto de OAuth), SendGrid, Mailgun, Twilio,
-OpenAI y Anthropic, y JWT. Además, hashes de contraseñas (bcrypt y los de `/etc/shadow`),
-que no sirven para entrar tal cual pero se pueden intentar romper sin conexión, y
-contraseñas en un `.netrc`.
+OpenAI, Anthropic, Groq, xAI y Replicate, Tailscale, HashiCorp Vault, Doppler, Heroku,
+Pulumi, Sentry, Linear, Notion y Figma, claves privadas de WireGuard, y JWT. Además, hashes de contraseñas (bcrypt y los de `/etc/shadow`),
+que no sirven para entrar tal cual pero se pueden intentar romper sin conexión,
+contraseñas en un `.netrc`, tokens escritos en una cabecera `Authorization: Bearer ...`
+(en el código o en un `curl` de un script) y contraseñas en una línea de órdenes
+(`mysqldump --password=...`, `sshpass -p ...`).
+
+También mira `.git/config`, aunque no entra en el resto de `.git`: ahí se queda el token
+cuando se clona con `https://usuario:token@github.com/...`, y viaja con la carpeta si se
+copia o se sube a un servidor. Y lee los archivos en UTF-16, que es como escribe
+PowerShell 5 con `>`.
 
 Y unas reglas genéricas: contraseñas dentro de URLs (`postgres://app:xxx@db/...` o
 `?password=...`), en cadenas de conexión de .NET y ODBC (`Server=...;Password=...`),
@@ -221,8 +233,8 @@ público no arregla nada: puede haber copias en cualquier parte.
   escáner no debería hacer peticiones con credenciales que no son suyas.
 - Las reglas genéricas se pueden equivocar hacia los dos lados. Una contraseña corta o
   hecha de palabras normales no se detecta.
-- Solo lee archivos de texto de menos de 2 MB y no entra en `node_modules`, `.venv` y
-  similares.
+- Solo lee archivos de texto de menos de 2 MB (de los más grandes avisa, para que se sepa
+  que se han quedado sin mirar) y no entra en `node_modules`, `.venv` y similares.
 
 ## Pruebas
 

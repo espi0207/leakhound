@@ -22,7 +22,10 @@ IGNORE_FILE = ".leakhound-ignore"
 INLINE_IGNORE = "leakhound:ignore"
 
 # Reglas genéricas: si en la misma línea ya ha saltado una concreta, sobran.
-GENERIC = {"generic-secret", "generic-secret-config", "url-password", "url-query-password", "xml-secret"}
+GENERIC = {
+    "generic-secret", "generic-secret-config", "url-password", "url-query-password", "xml-secret",
+    "authorization-header", "cli-password",
+}  # fmt: skip
 # Las únicas reglas en las que se enseña el dominio (el resto de la URL es el secreto).
 WEBHOOKS = {"slack-webhook", "discord-webhook"}
 
@@ -148,28 +151,49 @@ class Ignore:
         return cls(fingerprints, paths)
 
     def skips_path(self, rel: str) -> bool:
-        return any(fnmatch.fnmatch(rel, p) for p in self.paths)
+        """Como en .gitignore: vale un comodín (tests/fixtures/*), una carpeta (tests/fixtures o
+        tests/) y un nombre suelto, que cuenta esté donde esté (config.example.py, node_modules)."""
+        *folders, name = rel.split("/")
+        for pattern in self.paths:
+            folder = pattern.rstrip("/")
+            if fnmatch.fnmatch(rel, pattern) or rel.startswith(folder + "/"):
+                return True
+            if "/" not in folder and (fnmatch.fnmatch(name, folder) or folder in folders):
+                return True
+        return False
 
     def keeps(self, finding: Finding) -> bool:
         return finding.fingerprint not in self.fingerprints and not self.skips_path(finding.path)
 
 
-def read_text_file(path: Path, errors: list | None = None) -> str | None:
+UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
+
+
+def read_text_file(path: Path, errors: list | None = None, skipped: list | None = None) -> str | None:
     """Contenido del archivo si es de texto y de un tamaño razonable; si no, None.
 
     Si no se puede leer, se apunta en `errors`: un archivo sin leer no es un archivo limpio.
+    Un archivo de texto demasiado grande (un volcado de base de datos, un log) se apunta en
+    `skipped`, para que quien lo lanza sepa que eso se ha quedado sin mirar.
     """
     try:
-        if path.stat().st_size > MAX_FILE_SIZE:
+        size = path.stat().st_size
+        if size > MAX_FILE_SIZE:
+            with open(path, "rb") as fh:
+                head = fh.read(8192)
+            if skipped is not None and (head.startswith(UTF16_BOMS) or not is_binary(head)):
+                skipped.append((path, f"demasiado grande: {size / 1024 / 1024:.0f} MB"))
             return None
         data = path.read_bytes()
     except OSError as exc:
         if errors is not None:
             errors.append((path, exc.strerror or str(exc)))
         return None
-    if is_binary(data[:8192]):
+    # UTF-16 (lo que escribe PowerShell 5 con ">") está lleno de bytes a cero, pero es texto.
+    utf16 = data.startswith(UTF16_BOMS)
+    if is_binary(data[:8192]) and not utf16:
         return None
-    return data.decode("utf-8", errors="replace")
+    return data.decode("utf-16" if utf16 else "utf-8", errors="replace")
 
 
 def iter_files(root: Path) -> Iterator[Path]:
@@ -196,20 +220,37 @@ def project_root(path: Path) -> Path:
     return start
 
 
-def scan_path(root: Path, ignore: Ignore | None = None, errors: list | None = None) -> list[Finding]:
-    """Escanea un archivo o un directorio entero. Los que no se pueden leer van a `errors`."""
+def _files_to_scan(root: Path) -> Iterator[Path]:
+    yield from iter_files(root)
+    # .git no se recorre, pero su config sí se mira: ahí se queda el token cuando se clona con
+    # https://usuario:token@github.com/..., y viaja con la carpeta si se copia o se sube a un servidor.
+    git_config = root / ".git" / "config"
+    if root.is_dir() and git_config.is_file() and not git_config.is_symlink():
+        yield git_config
+
+
+def scan_path(
+    root: Path, ignore: Ignore | None = None, errors: list | None = None, skipped: list | None = None
+) -> list[Finding]:
+    """Escanea un archivo o un directorio entero.
+
+    Los que no se pueden leer van a `errors` y los de texto demasiado grandes, a `skipped`.
+    """
     root = Path(root).resolve()
     base = project_root(root)
     ignore = ignore if ignore is not None else Ignore.load(base)
     findings = []
-    for path in iter_files(root):
+    for path in _files_to_scan(root):
         rel = path.relative_to(base).as_posix()
         if rel == IGNORE_FILE or ignore.skips_path(rel):
             continue
         failed: list = []
-        text = read_text_file(path, failed)
+        too_big: list = []
+        text = read_text_file(path, failed, too_big)
         if errors is not None:
             errors.extend((rel, reason) for _, reason in failed)
+        if skipped is not None:
+            skipped.extend((rel, reason) for _, reason in too_big)
         if text is None:
             continue
         findings.extend(f for f in scan_text(text, rel) if ignore.keeps(f))

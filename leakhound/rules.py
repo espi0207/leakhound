@@ -31,9 +31,12 @@ class Severity(IntEnum):
 
 # Valores de ejemplo que aparecen en documentación y plantillas.
 PLACEHOLDERS = (
-    "example", "xxxx", "changeme", "change_me", "your_", "your-", "<", "${", "{{",
+    "example", "xxxx", "changeme", "change_me", "your_", "your-", "${", "{{",
     "dummy", "placeholder", "password", "passwd", "contraseña", "...", "…",
 )  # fmt: skip
+# <tu-clave-aquí> o {db_password}: el hueco de una plantilla. Un "<" o unas llaves sueltas no
+# bastan: las contraseñas generadas llevan símbolos, y antes "k9<3Jd8#mQz" se daba por ejemplo.
+TEMPLATE_SLOT = re.compile(r"<[^<>]{2,}>|\{\s*[A-Za-z_][\w.\[\]'\"(), :+*/-]*\}")
 
 
 def entropy(text: str) -> float:
@@ -48,8 +51,8 @@ def looks_like_placeholder(value: str) -> bool:
     low = value.lower()
     if any(p in low for p in PLACEHOLDERS) or len(set(value)) <= 3:
         return True
-    # {variable} de un f-string o de una plantilla: es código, no un secreto
-    return "{" in value and "}" in value
+    # {variable} de un f-string o <hueco> de una plantilla: es código o documentación, no un secreto
+    return bool(TEMPLATE_SLOT.search(value))
 
 
 def looks_like_identifier(value: str) -> bool:
@@ -260,6 +263,60 @@ RULES = [
         "Clave privada de age",
         Severity.CRITICAL,
         r"\b(AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58})\b",
+    ),
+    _rule(
+        "tailscale-key",
+        "Clave de Tailscale",
+        Severity.CRITICAL,  # con una clave de autenticación se mete un equipo en la red privada
+        r"\b(tskey-(?:auth|api|client|scim|webhook)-[A-Za-z0-9]{6,}-[A-Za-z0-9]{20,})\b",
+        needle="tskey-",
+    ),
+    _rule(
+        "vault-token", "Token de HashiCorp Vault", Severity.CRITICAL, r"\b(hv[sbr]\.[A-Za-z0-9_-]{90,})", needle="hv"
+    ),
+    _rule("sentry-token", "Token de Sentry", Severity.HIGH, r"\b(sntry[su]_[A-Za-z0-9+/=_-]{40,})", needle="sntry"),
+    _rule(
+        "linear-api-key", "Clave de API de Linear", Severity.HIGH, r"\b(lin_api_[A-Za-z0-9]{40})\b", needle="lin_api_"
+    ),
+    _rule("notion-token", "Token de Notion", Severity.HIGH, r"\b(ntn_[A-Za-z0-9]{40,})\b", needle="ntn_"),
+    _rule("groq-api-key", "Clave de API de Groq", Severity.HIGH, r"\b(gsk_[A-Za-z0-9]{52})\b", needle="gsk_"),
+    _rule("xai-api-key", "Clave de API de xAI", Severity.HIGH, r"\b(xai-[A-Za-z0-9]{80})\b", needle="xai-"),
+    _rule("replicate-token", "Token de Replicate", Severity.HIGH, r"\b(r8_[A-Za-z0-9]{37})\b", needle="r8_"),
+    _rule("heroku-token", "Token de Heroku", Severity.HIGH, r"\b(HRKU-[A-Za-z0-9_-]{58,})", needle="HRKU-"),
+    _rule(
+        "doppler-token",
+        "Token de Doppler",
+        Severity.CRITICAL,  # Doppler guarda los secretos de todo el proyecto
+        r"\b(dp\.(?:pt|st|ct|sa|scim|audit)\.[A-Za-z0-9]{40,44})\b",
+        needle="dp.",
+    ),
+    _rule("figma-token", "Token de Figma", Severity.MEDIUM, r"\b(figd_[A-Za-z0-9_-]{40,})", needle="figd_"),
+    _rule("pulumi-token", "Token de Pulumi", Severity.HIGH, r"\b(pul-[a-f0-9]{40})\b", needle="pul-"),
+    _rule(
+        "wireguard-private-key",
+        "Clave privada de WireGuard",
+        Severity.CRITICAL,
+        r"^\s*(?:PrivateKey|PresharedKey)\s*=\s*([A-Za-z0-9+/]{43}=)\s*$",
+        needle="Key",
+    ),
+    _rule(
+        "authorization-header",
+        "Token en una cabecera Authorization",
+        Severity.HIGH,
+        # "Authorization": "Bearer abc..." en el código, o curl -H 'Authorization: Bearer abc...' en un script
+        r"\bAuthorization[\"']?\s*[:=]\s*[\"']?\s*(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{16,})",
+        re.IGNORECASE,
+        fake_check="secret",
+        min_entropy=3.5,
+    ),
+    _rule(
+        "cli-password",
+        "Contraseña en una línea de órdenes",
+        Severity.HIGH,
+        # mysqldump --password=..., sshpass -p ...: quedan en el script y, al ejecutarse, a la vista en `ps`
+        r"(?:--password|--passwd|\bsshpass\s+-p)(?:=|\s+)[\"']?([^\s\"'$%`<{-][^\s\"']{5,})",
+        fake_check="secret",
+        min_entropy=3.0,
     ),
     _rule(
         "password-hash",
